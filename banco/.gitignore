@@ -1,0 +1,23 @@
+# Ambiente
+.env
+secrets/
+Wallet_*.zip
+
+*.p12
+*.sso
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OCI
+.oci/
+*.pem
+
+# Editor
+.vscode/
+
+# Sistema
+.DS_Store
+Thumbs.db

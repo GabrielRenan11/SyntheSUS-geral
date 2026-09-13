@@ -1,0 +1,349 @@
+# ============================================================
+# SyntheSUS - Airflow 3.3.0 + CeleryExecutor + DockerOperator
+#
+# Estrutura esperada:
+#
+# SyntheSUS-dbloader/
+# ├── .env                         <- credenciais do DB Loader
+# ├── .oci/
+# ├── secrets/oracle_wallet/
+# ├── src/
+# ├── Dockerfile
+# └── airflow/
+#     ├── .env                     <- somente AIRFLOW_UID=50000
+#     ├── docker-compose.yaml       <- este arquivo
+#     ├── dags/
+#     │   └── dag_dbloader_synthesus.py
+#     ├── logs/
+#     ├── config/
+#     └── plugins/
+#
+# IMPORTANTE:
+# - Uso local/desenvolvimento.
+# - /var/run/docker.sock dá ao Airflow acesso ao Docker host.
+# ============================================================
+
+x-airflow-common:
+  &airflow-common
+
+  image: apache/airflow:3.3.0
+
+  environment:
+    &airflow-common-env
+
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+
+    AIRFLOW__CORE__AUTH_MANAGER: >-
+      airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://airflow:airflow@postgres/airflow
+
+    AIRFLOW__CELERY__RESULT_BACKEND: >-
+      db+postgresql+psycopg2://airflow:airflow@postgres/airflow
+
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+
+    AIRFLOW__CORE__FERNET_KEY: ""
+
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: >-
+      http://airflow-apiserver:8080/execution/
+
+    AIRFLOW__API_AUTH__JWT_SECRET: synthesus_airflow_jwt_local
+
+    AIRFLOW__API_AUTH__JWT_ISSUER: airflow
+
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+    AIRFLOW_CONFIG: /opt/airflow/config/airflow.cfg
+
+    # Para este ambiente local, instala o provider necessário ao DockerOperator.
+    # Em uma implantação definitiva, o ideal é criar uma imagem Airflow própria.
+    _PIP_ADDITIONAL_REQUIREMENTS: >-
+      apache-airflow-providers-docker==4.5.9
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ./plugins:/opt/airflow/plugins
+
+    # .env do DB Loader, que está um nível acima da pasta airflow.
+    # NÃO confundir com airflow/.env.
+    - ../.env:/opt/synthesus/dbloader.env:ro
+
+    # Necessário para DockerOperator criar containers no Docker Desktop.
+    - /var/run/docker.sock:/var/run/docker.sock
+
+  user: "${AIRFLOW_UID:-50000}:0"
+
+  depends_on:
+    &airflow-common-depends-on
+
+    redis:
+      condition: service_healthy
+
+    postgres:
+      condition: service_healthy
+
+
+services:
+
+  # ==========================================================
+  # POSTGRES - METADADOS DO AIRFLOW
+  # ==========================================================
+
+  postgres:
+    image: postgres:16
+
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "pg_isready",
+          "-U",
+          "airflow"
+        ]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+    restart: always
+
+
+  # ==========================================================
+  # REDIS - BROKER DO CELERY
+  # ==========================================================
+
+  redis:
+    image: redis:7.2-bookworm
+
+    expose:
+      - "6379"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "redis-cli",
+          "ping"
+        ]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+
+    restart: always
+
+
+  # ==========================================================
+  # AIRFLOW API SERVER / INTERFACE WEB
+  # ==========================================================
+
+  airflow-apiserver:
+    <<: *airflow-common
+
+    command: api-server
+
+    ports:
+      - "8080:8080"
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "--fail",
+          "http://localhost:8080/api/v2/monitor/health"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    restart: always
+
+    depends_on:
+      <<: *airflow-common-depends-on
+
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ==========================================================
+  # SCHEDULER
+  # ==========================================================
+
+  airflow-scheduler:
+    <<: *airflow-common
+
+    command: scheduler
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    restart: always
+
+    depends_on:
+      <<: *airflow-common-depends-on
+
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ==========================================================
+  # DAG PROCESSOR
+  # ==========================================================
+
+  airflow-dag-processor:
+    <<: *airflow-common
+
+    command: dag-processor
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "airflow jobs check --job-type DagProcessorJob --hostname \"$${HOSTNAME}\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    restart: always
+
+    depends_on:
+      <<: *airflow-common-depends-on
+
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ==========================================================
+  # CELERY WORKER - É AQUI QUE O DOCKEROPERATOR EXECUTA
+  # ==========================================================
+
+  airflow-worker:
+    <<: *airflow-common
+
+    command: celery worker
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d \"celery@$${HOSTNAME}\" || celery --app airflow.executors.celery_executor.app inspect ping -d \"celery@$${HOSTNAME}\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    environment:
+      <<: *airflow-common-env
+
+      # Necessário para shutdown correto do Celery worker.
+      DUMB_INIT_SETSID: "0"
+
+    restart: always
+
+    depends_on:
+      <<: *airflow-common-depends-on
+
+      airflow-apiserver:
+        condition: service_healthy
+
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ==========================================================
+  # TRIGGERER
+  # ==========================================================
+
+  airflow-triggerer:
+    <<: *airflow-common
+
+    command: triggerer
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "airflow jobs check --job-type TriggererJob --hostname \"$${HOSTNAME}\""
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    restart: always
+
+    depends_on:
+      <<: *airflow-common-depends-on
+
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ==========================================================
+  # INICIALIZAÇÃO DO BANCO DO AIRFLOW + USUÁRIO ADMIN
+  # ==========================================================
+
+  airflow-init:
+    <<: *airflow-common
+
+    entrypoint: /bin/bash
+
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/logs
+        mkdir -p /opt/airflow/dags
+        mkdir -p /opt/airflow/plugins
+        mkdir -p /opt/airflow/config
+
+        echo "Inicializando Airflow..."
+        /entrypoint airflow version
+
+    environment:
+      <<: *airflow-common-env
+
+      _AIRFLOW_DB_MIGRATE: "true"
+
+      _AIRFLOW_WWW_USER_CREATE: "true"
+
+      _AIRFLOW_WWW_USER_USERNAME: airflow
+
+      _AIRFLOW_WWW_USER_PASSWORD: airflow
+
+      # O init não precisa instalar o provider Docker.
+      _PIP_ADDITIONAL_REQUIREMENTS: ""
+
+    user: "0:0"
+
+
+volumes:
+
+  postgres-db-volume:

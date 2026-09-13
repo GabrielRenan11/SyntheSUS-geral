@@ -1,0 +1,8 @@
+oci
+pysus
+pandas
+pyarrow
+pyyaml
+dbfread
+requests
+urllib3

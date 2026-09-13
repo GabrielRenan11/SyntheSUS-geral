@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SyntheSUS Dashboard</title>
+  <meta name="description" content="Dashboard analítico SyntheSUS para dados de saúde pública.">
+
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-logo-box">
+          <img src="assets/logo-synthesus-sidebar.png" alt="Logo SyntheSUS" class="brand-logo">
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Navegação principal">
+        <button class="nav-item active" data-view="geral">
+          <i class="bi bi-grid-1x2-fill"></i>
+          <span>Visão geral</span>
+        </button>
+        <button class="nav-item" data-view="unidades">
+          <i class="bi bi-hospital-fill"></i>
+          <span>Unidades</span>
+        </button>
+        <button class="nav-item" data-view="leitos">
+          <i class="bi bi-house-heart-fill"></i>
+          <span>Disponibilidade de leitos</span>
+        </button>
+        <button class="nav-item" data-view="equipamentos">
+          <i class="bi bi-activity"></i>
+          <span>Disponibilidade de equipamentos</span>
+        </button>
+        <button class="nav-item" data-view="profissionais">
+          <i class="bi bi-people-fill"></i>
+          <span>Disponibilidade de profissionais</span>
+        </button>
+        <button class="nav-item" data-view="internacoes">
+          <i class="bi bi-clipboard2-pulse-fill"></i>
+          <span>Internações</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="api-status">
+          <span class="status-dot" id="apiStatusDot"></span>
+          <div>
+            <strong id="apiStatusText">Verificando API...</strong>
+            <small>Oracle + FastAPI</small>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="btn sidebar-toggle d-lg-none" id="sidebarToggle" aria-label="Abrir menu">
+          <i class="bi bi-list"></i>
+        </button>
+        <div>
+          <h1 id="pageTitle">Visão geral</h1>
+          <p id="pageSubtitle">Panorama nacional de internações e infraestrutura hospitalar.</p>
+        </div>
+        <div class="topbar-actions">
+          <span class="last-update" id="lastUpdate">Ainda não atualizado</span>
+          <button class="btn btn-primary btn-refresh" id="refreshCurrent">
+            <i class="bi bi-arrow-clockwise"></i>
+            Atualizar
+          </button>
+        </div>
+      </header>
+
+      <div class="content-area">
+
+        <!-- ===================================================== -->
+        <!-- VISÃO GERAL -->
+        <!-- ===================================================== -->
+        <section class="dashboard-view active" id="view-geral">
+          <div class="filter-panel">
+            <div class="filter-panel-heading">
+              <div>
+                <span class="eyebrow">Filtros</span>
+                <h2>Recorte da análise</h2>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm" data-clear="geral">
+                <i class="bi bi-eraser"></i> Limpar
+              </button>
+            </div>
+
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-2">
+                <label for="geralDataInicio" class="form-label">Data inicial</label>
+                <input type="date" id="geralDataInicio" class="form-control">
+              </div>
+              <div class="col-12 col-md-6 col-xl-2">
+                <label for="geralDataFim" class="form-label">Data final</label>
+                <input type="date" id="geralDataFim" class="form-control">
+              </div>
+              <div class="col-12 col-md-4 col-xl-2">
+                <label for="geralRegiao" class="form-label">Região</label>
+                <select id="geralRegiao" class="form-select geo-region" data-scope="geral">
+                  <option value="">Todas</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-4 col-xl-2">
+                <label for="geralUf" class="form-label">UF</label>
+                <select id="geralUf" class="form-select geo-uf" data-scope="geral">
+                  <option value="">Todas</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-4 col-xl-2">
+                <label for="geralMunicipio" class="form-label">Município</label>
+                <select id="geralMunicipio" class="form-select geo-municipio" data-scope="geral">
+                  <option value="">Todos</option>
+                </select>
+              </div>
+              <div class="col-12 col-xl-2 d-flex align-items-end">
+                <button class="btn btn-primary w-100" id="btnGeral">
+                  <i class="bi bi-funnel-fill"></i> Aplicar
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="metric-grid metric-grid-4">
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-clipboard2-pulse"></i></div>
+              <div>
+                <span>Total de internações</span>
+                <strong id="geralTotalInternacoes">—</strong>
+                <small>No período selecionado</small>
+              </div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-bed"></i></div>
+              <div>
+                <span>Total de leitos</span>
+                <strong id="geralTotalLeitos">—</strong>
+                <small>Fotografia da competência final</small>
+              </div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-clock-history"></i></div>
+              <div>
+                <span>Permanência média</span>
+                <strong id="geralPermanenciaMedia">—</strong>
+                <small>Dias por internação</small>
+              </div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-hospital"></i></div>
+              <div>
+                <span>Unidades</span>
+                <strong id="geralTotalUnidades">—</strong>
+                <small>CNES distintos no período</small>
+              </div>
+            </article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel panel-wide">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">Evolução</span>
+                  <h3>Internações por mês</h3>
+                </div>
+                <span class="panel-chip"><i class="bi bi-graph-up-arrow"></i> Série temporal</span>
+              </div>
+              <div class="chart-wrap chart-lg"><canvas id="chartGeralEvolucao"></canvas></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">Top 10</span>
+                  <h3>Hospitais com maior demanda</h3>
+                </div>
+              </div>
+              <div class="chart-wrap"><canvas id="chartGeralHospitais"></canvas></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <span class="eyebrow">Top 10</span>
+                  <h3>Principais motivos de internação</h3>
+                </div>
+              </div>
+              <div class="chart-wrap"><canvas id="chartGeralDiagnosticos"></canvas></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- ===================================================== -->
+        <!-- UNIDADES -->
+        <!-- ===================================================== -->
+        <section class="dashboard-view" id="view-unidades">
+          <div class="filter-panel">
+            <div class="filter-panel-heading">
+              <div>
+                <span class="eyebrow">Filtros</span>
+                <h2>Unidades de saúde</h2>
+              </div>
+              <button class="btn btn-outline-secondary btn-sm" data-clear="unidades">
+                <i class="bi bi-eraser"></i> Limpar
+              </button>
+            </div>
+
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-2">
+                <label for="unidadesCompInicio" class="form-label">Competência inicial</label>
+                <input type="month" id="unidadesCompInicio" class="form-control">
+              </div>
+              <div class="col-12 col-md-6 col-xl-2">
+                <label for="unidadesCompFim" class="form-label">Competência final</label>
+                <input type="month" id="unidadesCompFim" class="form-control">
+              </div>
+              <div class="col-12 col-md-4 col-xl-2">
+                <label for="unidadesRegiao" class="form-label">Região</label>
+                <select id="unidadesRegiao" class="form-select geo-region" data-scope="unidades"><option value="">Todas</option></select>
+              </div>
+              <div class="col-12 col-md-4 col-xl-2">
+                <label for="unidadesUf" class="form-label">UF</label>
+                <select id="unidadesUf" class="form-select geo-uf" data-scope="unidades"><option value="">Todas</option></select>
+              </div>
+              <div class="col-12 col-md-4 col-xl-2">
+                <label for="unidadesMunicipio" class="form-label">Município</label>
+                <select id="unidadesMunicipio" class="form-select geo-municipio" data-scope="unidades"><option value="">Todos</option></select>
+              </div>
+              <div class="col-12 col-xl-2 d-flex align-items-end">
+                <button class="btn btn-primary w-100" id="btnUnidades">
+                  <i class="bi bi-funnel-fill"></i> Aplicar
+                </button>
+              </div>
+
+              <div class="col-12 col-lg-8">
+                <label for="unidadesCnes" class="form-label">Unidade (CNES)</label>
+                <div class="input-group">
+                  <select id="unidadesCnes" class="form-select unit-select" data-scope="unidades">
+                    <option value="">Todas as unidades</option>
+                  </select>
+                  <button class="btn btn-outline-primary load-units" data-scope="unidades" type="button">
+                    <i class="bi bi-arrow-repeat"></i> Carregar unidades
+                  </button>
+                </div>
+                <small class="form-text">Para evitar milhares de opções, selecione preferencialmente uma UF ou município antes de carregar.</small>
+              </div>
+              <div class="col-12 col-md-6 col-lg-2">
+                <label for="unidadesCompHall" class="form-label">Competência do hall</label>
+                <input type="month" id="unidadesCompHall" class="form-control">
+              </div>
+              <div class="col-12 col-md-6 col-lg-2">
+                <label for="unidadesComparativo" class="form-label">Comparativo</label>
+                <select id="unidadesComparativo" class="form-select">
+                  <option value="media_por_unidade">Média</option>
+                  <option value="mediana_por_unidade">Mediana</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="metric-grid metric-grid-3">
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-patch-check"></i></div>
+              <div><span>Unidades com alvará</span><strong id="unidadesComAlvara">—</strong><small>No período</small></div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-patch-exclamation"></i></div>
+              <div><span>Unidades sem alvará</span><strong id="unidadesSemAlvara">—</strong><small>No período</small></div>
+            </article>
+            <article class="metric-card">
+              <div class="metric-icon"><i class="bi bi-hospital"></i></div>
+              <div><span>Total de unidades</span><strong id="unidadesTotal">—</strong><small>No recorte</small></div>
+            </article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel">
+              <div class="panel-heading">
+                <div><span class="eyebrow">Unidade selecionada</span><h3>Alvará</h3></div>
+              </div>
+              <div class="permit-card" id="unidadeAlvaraCard">
+                <div class="empty-state compact"><i class="bi bi-card-checklist"></i><span>Selecione uma unidade para consultar o alvará.</span></div>
+              </div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <div><span class="eyebrow">Top 10</span><h3>Tipos de unidade</h3></div>
+              </div>
+              <div class="ranking-list" id="rankingTiposUnidade"></div>
+            </article>
+
+            <article class="panel panel-wide">
+              <div class="panel-heading">
+                <div><span class="eyebrow">Evolução</span><h3>Internações mensais</h3></div>
+                <span class="panel-chip" id="unidadesComparativoChip">Comparativo: média</span>
+              </div>
+              <div class="chart-wrap chart-lg"><canvas id="chartUnidadesEvolucao"></canvas></div>
+            </article>
+
+            <article class="panel panel-wide">
+              <div class="panel-heading">
+                <div><span class="eyebrow">Top 10</span><h3>Permanência média em UTI por unidade</h3></div>
+              </div>
+              <div class="chart-wrap chart-lg"><canvas id="chartUnidadesUti"></canvas></div>
+            </article>
+          </div>
+
+          <div class="section-divider">
+            <div><span class="eyebrow">Hall de competência única</span><h2>Infraestrutura da unidade selecionada</h2></div>
+            <span id="infraHallBadge" class="panel-chip">Selecione CNES + competência</span>
+          </div>
+
+          <div class="dashboard-grid dashboard-grid-3">
+            <article class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">Leitos</span><h3>Quantidade por tipo</h3></div></div>
+              <div class="chart-wrap"><canvas id="chartInfraLeitos"></canvas></div>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">Equipamentos</span><h3>Quantidade por tipo</h3></div></div>
+              <div class="chart-wrap"><canvas id="chartInfraEquipamentos"></canvas></div>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">Profissionais</span><h3>Distribuição por ocupação</h3></div></div>
+              <div class="chart-wrap"><canvas id="chartInfraProfissionais"></canvas></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- ===================================================== -->
+        <!-- LEITOS -->
+        <!-- ===================================================== -->
+        <section class="dashboard-view" id="view-leitos">
+          <div class="filter-panel">
+            <div class="filter-panel-heading">
+              <div><span class="eyebrow">Filtros</span><h2>Disponibilidade de leitos</h2></div>
+              <button class="btn btn-outline-secondary btn-sm" data-clear="leitos"><i class="bi bi-eraser"></i> Limpar</button>
+            </div>
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="leitosCompInicio">Competência inicial</label><input type="month" id="leitosCompInicio" class="form-control"></div>
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="leitosCompFim">Competência final</label><input type="month" id="leitosCompFim" class="form-control"></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="leitosRegiao">Região</label><select id="leitosRegiao" class="form-select geo-region" data-scope="leitos"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="leitosUf">UF</label><select id="leitosUf" class="form-select geo-uf" data-scope="leitos"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="leitosMunicipio">Município</label><select id="leitosMunicipio" class="form-select geo-municipio" data-scope="leitos"><option value="">Todos</option></select></div>
+              <div class="col-12 col-xl-2 d-flex align-items-end"><button class="btn btn-primary w-100" id="btnLeitos"><i class="bi bi-funnel-fill"></i> Aplicar</button></div>
+              <div class="col-12 col-lg-8"><label class="form-label" for="leitosCnes">Unidade</label><div class="input-group"><select id="leitosCnes" class="form-select unit-select" data-scope="leitos"><option value="">Todas as unidades</option></select><button class="btn btn-outline-primary load-units" data-scope="leitos" type="button"><i class="bi bi-arrow-repeat"></i> Carregar unidades</button></div></div>
+            </div>
+          </div>
+
+          <div class="metric-grid metric-grid-4">
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-bed"></i></div><div><span>Leitos existentes</span><strong id="leitosExistentes">—</strong><small>Competência final</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-heart-pulse"></i></div><div><span>Disponíveis ao SUS</span><strong id="leitosSus">—</strong><small>Competência final</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-file-earmark-check"></i></div><div><span>Leitos contratados</span><strong id="leitosContratados">—</strong><small>Competência final</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-buildings"></i></div><div><span>Unidades com leitos</span><strong id="leitosUnidadesCount">—</strong><small>Ao menos 1 leito</small></div></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel panel-tall">
+              <div class="panel-heading"><div><span class="eyebrow">Lista</span><h3>Unidades com leitos</h3></div><span class="panel-chip">Competência final</span></div>
+              <div class="data-list" id="listaUnidadesLeitos"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">Top 10</span><h3>Hospitais com mais leitos</h3></div></div>
+              <div class="chart-wrap"><canvas id="chartLeitosUnidades"></canvas></div>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">Top 10</span><h3>Leitos por tipo</h3></div></div>
+              <div class="chart-wrap"><canvas id="chartLeitosTipos"></canvas></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- ===================================================== -->
+        <!-- EQUIPAMENTOS -->
+        <!-- ===================================================== -->
+        <section class="dashboard-view" id="view-equipamentos">
+          <div class="filter-panel">
+            <div class="filter-panel-heading">
+              <div><span class="eyebrow">Filtros</span><h2>Disponibilidade de equipamentos</h2></div>
+              <button class="btn btn-outline-secondary btn-sm" data-clear="equipamentos"><i class="bi bi-eraser"></i> Limpar</button>
+            </div>
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="equipCompInicio">Competência inicial</label><input type="month" id="equipCompInicio" class="form-control"></div>
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="equipCompFim">Competência final</label><input type="month" id="equipCompFim" class="form-control"></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="equipRegiao">Região</label><select id="equipRegiao" class="form-select geo-region" data-scope="equipamentos"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="equipUf">UF</label><select id="equipUf" class="form-select geo-uf" data-scope="equipamentos"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="equipMunicipio">Município</label><select id="equipMunicipio" class="form-select geo-municipio" data-scope="equipamentos"><option value="">Todos</option></select></div>
+              <div class="col-12 col-xl-2 d-flex align-items-end"><button class="btn btn-primary w-100" id="btnEquipamentos"><i class="bi bi-funnel-fill"></i> Aplicar</button></div>
+
+              <div class="col-12 col-lg-7"><label class="form-label" for="equipCnes">Unidade</label><div class="input-group"><select id="equipCnes" class="form-select unit-select" data-scope="equipamentos"><option value="">Todas as unidades</option></select><button class="btn btn-outline-primary load-units" data-scope="equipamentos" type="button"><i class="bi bi-arrow-repeat"></i> Carregar unidades</button></div></div>
+              <div class="col-12 col-lg-5"><label class="form-label" for="equipTipo">Tipo de equipamento</label><input id="equipTipo" class="form-control" list="equipTiposDatalist" placeholder="Opcional: digite exatamente como cadastrado"><datalist id="equipTiposDatalist"></datalist></div>
+            </div>
+          </div>
+
+          <div class="metric-grid metric-grid-3">
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-cpu"></i></div><div><span>Equipamentos cadastrados</span><strong id="equipTotal">—</strong><small>Competência final</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-activity"></i></div><div><span>Equipamentos operacionais</span><strong id="equipOperacionais">—</strong><small>Em uso</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-heart-pulse"></i></div><div><span>Disponíveis ao SUS</span><strong id="equipSus">—</strong><small>Competência final</small></div></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">Ranking</span><h3>Tipos de equipamentos</h3></div></div>
+              <div class="ranking-list" id="rankingEquipamentos"></div>
+            </article>
+            <article class="panel panel-wide">
+              <div class="panel-heading"><div><span class="eyebrow">Evolução média</span><h3>Cadastrados, operacionais e disponíveis ao SUS</h3></div></div>
+              <div class="chart-wrap chart-lg"><canvas id="chartEquipEvolucao"></canvas></div>
+            </article>
+          </div>
+        </section>
+
+        <!-- ===================================================== -->
+        <!-- PROFISSIONAIS -->
+        <!-- ===================================================== -->
+        <section class="dashboard-view" id="view-profissionais">
+          <div class="filter-panel">
+            <div class="filter-panel-heading">
+              <div><span class="eyebrow">Filtros</span><h2>Disponibilidade de profissionais</h2></div>
+              <button class="btn btn-outline-secondary btn-sm" data-clear="profissionais"><i class="bi bi-eraser"></i> Limpar</button>
+            </div>
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="profCompInicio">Competência inicial</label><input type="month" id="profCompInicio" class="form-control"></div>
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="profCompFim">Competência final</label><input type="month" id="profCompFim" class="form-control"></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="profRegiao">Região</label><select id="profRegiao" class="form-select geo-region" data-scope="profissionais"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="profUf">UF</label><select id="profUf" class="form-select geo-uf" data-scope="profissionais"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="profMunicipio">Município</label><select id="profMunicipio" class="form-select geo-municipio" data-scope="profissionais"><option value="">Todos</option></select></div>
+              <div class="col-12 col-xl-2 d-flex align-items-end"><button class="btn btn-primary w-100" id="btnProfissionais"><i class="bi bi-funnel-fill"></i> Aplicar</button></div>
+              <div class="col-12 col-lg-8"><label class="form-label" for="profCnes">Unidade</label><div class="input-group"><select id="profCnes" class="form-select unit-select" data-scope="profissionais"><option value="">Todas as unidades</option></select><button class="btn btn-outline-primary load-units" data-scope="profissionais" type="button"><i class="bi bi-arrow-repeat"></i> Carregar unidades</button></div></div>
+            </div>
+          </div>
+
+          <div class="metric-grid metric-grid-4">
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-person-badge"></i></div><div><span>Profissionais cadastrados</span><strong id="profTotal">—</strong><small>CNS distintos</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-heart-pulse"></i></div><div><span>A serviço do SUS</span><strong id="profSus">—</strong><small>CNS distintos</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-clock"></i></div><div><span>Carga horária média</span><strong id="profCarga">—</strong><small>Horas trabalhadas</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-building-add"></i></div><div><span>Média por unidade</span><strong id="profMediaUnidade">—</strong><small>Profissionais distintos</small></div></article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-heading"><div><span class="eyebrow">Top 10</span><h3>Profissionais por ocupação</h3></div></div>
+            <div class="ranking-list ranking-list-large" id="rankingProfissionais"></div>
+          </article>
+        </section>
+
+        <!-- ===================================================== -->
+        <!-- INTERNAÇÕES -->
+        <!-- ===================================================== -->
+        <section class="dashboard-view" id="view-internacoes">
+          <div class="filter-panel">
+            <div class="filter-panel-heading">
+              <div><span class="eyebrow">Filtros</span><h2>Internações</h2></div>
+              <button class="btn btn-outline-secondary btn-sm" data-clear="internacoes"><i class="bi bi-eraser"></i> Limpar</button>
+            </div>
+
+            <div class="row g-3">
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="intDataInicio">Data inicial</label><input type="date" id="intDataInicio" class="form-control"></div>
+              <div class="col-12 col-md-6 col-xl-2"><label class="form-label" for="intDataFim">Data final</label><input type="date" id="intDataFim" class="form-control"></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="intRegiao">Região</label><select id="intRegiao" class="form-select geo-region" data-scope="internacoes"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="intUf">UF</label><select id="intUf" class="form-select geo-uf" data-scope="internacoes"><option value="">Todas</option></select></div>
+              <div class="col-12 col-md-4 col-xl-2"><label class="form-label" for="intMunicipio">Município</label><select id="intMunicipio" class="form-select geo-municipio" data-scope="internacoes"><option value="">Todos</option></select></div>
+              <div class="col-12 col-xl-2 d-flex align-items-end"><button class="btn btn-primary w-100" id="btnInternacoes"><i class="bi bi-funnel-fill"></i> Aplicar</button></div>
+
+              <div class="col-12 col-lg-6"><label class="form-label" for="intCnes">Unidade</label><div class="input-group"><select id="intCnes" class="form-select unit-select" data-scope="internacoes"><option value="">Todas as unidades</option></select><button class="btn btn-outline-primary load-units" data-scope="internacoes" type="button"><i class="bi bi-arrow-repeat"></i> Carregar unidades</button></div></div>
+              <div class="col-12 col-sm-6 col-lg-2"><label class="form-label" for="intSexo">Sexo</label><input id="intSexo" class="form-control" placeholder="Opcional"></div>
+              <div class="col-12 col-sm-6 col-lg-2"><label class="form-label" for="intRaca">Raça/cor</label><input id="intRaca" class="form-control" placeholder="Opcional"></div>
+              <div class="col-12 col-sm-6 col-lg-2"><label class="form-label" for="intEtnia">Etnia</label><input id="intEtnia" class="form-control" placeholder="Opcional"></div>
+              <div class="col-12 col-md-6 col-lg-4"><label class="form-label" for="intCarater">Caráter da internação</label><input id="intCarater" class="form-control" placeholder="Opcional"></div>
+              <div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="intIdadeMin">Idade mínima</label><input id="intIdadeMin" class="form-control" type="number" min="0" max="130" placeholder="0"></div>
+              <div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="intIdadeMax">Idade máxima</label><input id="intIdadeMax" class="form-control" type="number" min="0" max="130" placeholder="130"></div>
+            </div>
+          </div>
+
+          <div class="metric-grid metric-grid-4">
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-clipboard2-pulse"></i></div><div><span>Total de internações</span><strong id="intTotal">—</strong><small>No período</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-calendar2-week"></i></div><div><span>Permanência média</span><strong id="intPermanencia">—</strong><small>Dias</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-hospital"></i></div><div><span>Permanência média em UTI</span><strong id="intPermanenciaUti">—</strong><small>Dias em UTI</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-cash-stack"></i></div><div><span>Valor médio</span><strong id="intValorMedio">—</strong><small>Por internação</small></div></article>
+          </div>
+
+          <article class="panel mb-4">
+            <div class="panel-heading"><div><span class="eyebrow">Top 10</span><h3>Motivos de internação</h3></div></div>
+            <div class="ranking-list ranking-list-large" id="rankingInternacoes"></div>
+          </article>
+
+          <div class="dashboard-grid dashboard-grid-4">
+            <article class="panel"><div class="panel-heading"><div><span class="eyebrow">Demográfico</span><h3>Sexo</h3></div></div><div class="chart-wrap"><canvas id="chartIntSexo"></canvas></div></article>
+            <article class="panel"><div class="panel-heading"><div><span class="eyebrow">Demográfico</span><h3>Faixa etária</h3></div></div><div class="chart-wrap"><canvas id="chartIntIdade"></canvas></div></article>
+            <article class="panel"><div class="panel-heading"><div><span class="eyebrow">Demográfico</span><h3>Raça/cor</h3></div></div><div class="chart-wrap"><canvas id="chartIntRaca"></canvas></div></article>
+            <article class="panel"><div class="panel-heading"><div><span class="eyebrow">Top 10</span><h3>Etnia</h3></div></div><div class="chart-wrap"><canvas id="chartIntEtnia"></canvas></div></article>
+          </div>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-container position-fixed bottom-0 end-0 p-3">
+    <div id="appToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+      <div class="toast-header">
+        <i class="bi bi-info-circle me-2"></i>
+        <strong class="me-auto">SyntheSUS</strong>
+        <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Fechar"></button>
+      </div>
+      <div class="toast-body" id="toastBody">Mensagem</div>
+    </div>
+  </div>
+
+  <div class="loading-overlay" id="loadingOverlay" aria-hidden="true">
+    <div class="loading-box">
+      <div class="spinner-border text-primary" role="status"></div>
+      <strong>Consultando o SyntheSUS...</strong>
+      <small>Buscando dados na API.</small>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

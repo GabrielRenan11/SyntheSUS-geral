@@ -1,0 +1,13 @@
+# Arquivos do ambiente e credenciais
+.env
+*.json
+*.pem
+
+# Logs do Airflow e temporários
+airflow/logs/
+**/__pycache__/
+*.pyc
+
+# Configurações de IDE e ambiente local
+.vscode/
+.idea/
