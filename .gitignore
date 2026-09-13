@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Credenciais
+.env
+.env.*
+wallet/
+Wallet_*/
+*.pem
+*.p12
+*.sso
+*.jks
+
+# OCI
+config
+
+# IDE
+.vscode/
+.idea/
+
+# Sistema
+Thumbs.db
+.DS_Store
