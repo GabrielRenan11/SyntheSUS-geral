@@ -418,8 +418,9 @@ O SyntheSUS foi desenvolvido como projeto acadêmico do curso de **Data Science 
 
 ---
 
-## Autor
+## Autores
 
+**Felipe Lorandi de Souza**
 **Gabriel Renan Maia da Silva**
 
 Data Science — FIAP
