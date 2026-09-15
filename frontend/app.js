@@ -874,7 +874,7 @@ async function refreshEquipamentos() {
             el("equipOperacionais").textContent = formatNumber(resumo.total_equipamentos_operacionais);
             el("equipSus").textContent = formatNumber(resumo.total_equipamentos_sus);
 
-            ranking("rankingEquipamentos", rankingData, "tipo_equipamento", "quantidade");
+            ranking("rankingEquipamentos", rankingData, "nome", "quantidade");
             fillEquipmentDatalist(rankingData);
 
             lineChart("chartEquipEvolucao",
@@ -898,7 +898,7 @@ function fillEquipmentDatalist(rows) {
     datalist.innerHTML = "";
     rows.forEach(row => {
         const option = document.createElement("option");
-        option.value = row.tipo_equipamento ?? "";
+        option.value = row.nome ?? "";
         datalist.appendChild(option);
     });
 }
@@ -959,7 +959,12 @@ async function refreshInternacoes() {
             data_entrada: start,
             data_saida: end,
             ...getGeoAndUnit("internacoes"),
-            carater_internacao: value("intCarater")
+            sexo: value("intSexo"),
+            raca_cor: value("intRaca"),
+            etnia: value("intEtnia"),
+            carater_internacao: value("intCarater"),
+            idade_min: value("intIdadeMin"),
+            idade_max: value("intIdadeMax")
         };
 
         await withLoading(async () => {

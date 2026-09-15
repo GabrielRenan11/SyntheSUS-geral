@@ -355,7 +355,7 @@
           </div>
 
           <div class="metric-grid metric-grid-4">
-            <article class="metric-card"><div class="metric-icon"><i class="bi bi-bed"></i></div><div><span>Leitos existentes</span><strong id="leitosExistentes">—</strong><small>Competência final</small></div></article>
+            <article class="metric-card"><div class="metric-icon"><i class="bi bi-house-heart-fill"></i></div><div><span>Leitos existentes</span><strong id="leitosExistentes">—</strong><small>Competência final</small></div></article>
             <article class="metric-card"><div class="metric-icon"><i class="bi bi-heart-pulse"></i></div><div><span>Disponíveis ao SUS</span><strong id="leitosSus">—</strong><small>Competência final</small></div></article>
             <article class="metric-card"><div class="metric-icon"><i class="bi bi-file-earmark-check"></i></div><div><span>Leitos contratados</span><strong id="leitosContratados">—</strong><small>Competência final</small></div></article>
             <article class="metric-card"><div class="metric-icon"><i class="bi bi-buildings"></i></div><div><span>Unidades com leitos</span><strong id="leitosUnidadesCount">—</strong><small>Ao menos 1 leito</small></div></article>
@@ -469,10 +469,72 @@
               <div class="col-12 col-xl-2 d-flex align-items-end"><button class="btn btn-primary w-100" id="btnInternacoes"><i class="bi bi-funnel-fill"></i> Aplicar</button></div>
 
               <div class="col-12 col-lg-6"><label class="form-label" for="intCnes">Unidade</label><div class="input-group"><select id="intCnes" class="form-select unit-select" data-scope="internacoes"><option value="">Todas as unidades</option></select><button class="btn btn-outline-primary load-units" data-scope="internacoes" type="button"><i class="bi bi-arrow-repeat"></i> Carregar unidades</button></div></div>
-              <div class="col-12 col-sm-6 col-lg-2"><label class="form-label" for="intSexo">Sexo</label><input id="intSexo" class="form-control" placeholder="Opcional"></div>
-              <div class="col-12 col-sm-6 col-lg-2"><label class="form-label" for="intRaca">Raça/cor</label><input id="intRaca" class="form-control" placeholder="Opcional"></div>
-              <div class="col-12 col-sm-6 col-lg-2"><label class="form-label" for="intEtnia">Etnia</label><input id="intEtnia" class="form-control" placeholder="Opcional"></div>
-              <div class="col-12 col-md-6 col-lg-4"><label class="form-label" for="intCarater">Caráter da internação</label><input id="intCarater" class="form-control" placeholder="Opcional"></div>
+
+              <div class="col-12 col-sm-6 col-lg-2">
+                <label class="form-label" for="intSexo">Sexo</label>
+                <select id="intSexo" class="form-select">
+                  <option value="">Todos</option>
+                  <option value="Masculino">Masculino</option>
+                  <option value="Feminino">Feminino</option>
+                </select>
+              </div>
+
+              <div class="col-12 col-sm-6 col-lg-2">
+                <label class="form-label" for="intRaca">Raça/cor</label>
+                <select id="intRaca" class="form-select">
+                  <option value="">Todas</option>
+                  <option value="Branca">Branca</option>
+                  <option value="Preta">Preta</option>
+                  <option value="Parda">Parda</option>
+                  <option value="Amarela">Amarela</option>
+                  <option value="Indígena">Indígena</option>
+                  <option value="Não informado">Não informado</option>
+                </select>
+              </div>
+
+              <div class="col-12 col-sm-6 col-lg-2">
+                <label class="form-label" for="intEtnia">Etnia</label>
+                <input
+                  id="intEtnia"
+                  class="form-control"
+                  placeholder="Opcional"
+                >
+              </div>
+
+              <div class="col-12 col-md-6 col-lg-4">
+                <label class="form-label" for="intCarater">
+                  Caráter da internação
+                </label>
+
+                <select id="intCarater" class="form-select">
+                  <option value="">Todos</option>
+
+                  <option value="Urgência">
+                    Urgência
+                  </option>
+
+                  <option value="Eletivo">
+                    Eletivo
+                  </option>
+
+                  <option value="Outras lesões/envenenamentos por agentes químicos ou físicos">
+                    Outras lesões/envenenamentos por agentes químicos ou físicos
+                  </option>
+
+                  <option value="Outro tipo de acidente de trânsito">
+                    Outro tipo de acidente de trânsito
+                  </option>
+
+                  <option value="Acidente no local de trabalho ou a serviço da empresa">
+                    Acidente no local de trabalho ou a serviço da empresa
+                  </option>
+
+                  <option value="Acidente no trajeto para o trabalho">
+                    Acidente no trajeto para o trabalho
+                  </option>
+                </select>
+              </div>
+
               <div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="intIdadeMin">Idade mínima</label><input id="intIdadeMin" class="form-control" type="number" min="0" max="130" placeholder="0"></div>
               <div class="col-6 col-md-3 col-lg-2"><label class="form-label" for="intIdadeMax">Idade máxima</label><input id="intIdadeMax" class="form-control" type="number" min="0" max="130" placeholder="130"></div>
             </div>
