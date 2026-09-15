@@ -1,9 +1,12 @@
 from datetime import date
+from threading import Lock
+from time import monotonic
 
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 
 from database import conectar_oracle
 
@@ -19,6 +22,13 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Comprime respostas maiores que 1 KB.
+# O navegador descomprime automaticamente.
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=1000
 )
 
 
@@ -172,6 +182,40 @@ def adicionar_filtro_cnes(
     return sql, parametros
 
 
+def adicionar_joins_internacao_opcionais(
+    sql: str,
+    regiao: Optional[str] = None,
+    uf: Optional[str] = None,
+    municipio: Optional[str] = None,
+    cnes: Optional[str] = None
+):
+    """
+    Adiciona JOINs somente quando os filtros realmente precisam deles.
+
+    - DIM_MUNICIPIO só é usado para região/UF/município.
+    - UNIDADE_SAUDE só é usada para filtrar por CNES.
+
+    Isso evita JOINs desnecessários nas consultas nacionais e nos
+    recortes que usam apenas filtros diretamente da INTERNACAO.
+    """
+
+    if regiao or uf or municipio:
+        sql += """
+        JOIN DIM_MUNICIPIO dm
+            ON dm.id_municipio =
+               i.dim_municipio_municipio_int
+        """
+
+    if cnes:
+        sql += """
+        JOIN UNIDADE_SAUDE u
+            ON u.id_versao_unidade =
+               i.unidade_saude_id_unidade
+        """
+
+    return sql
+
+
 def condicao_sim(campo: str) -> str:
     """
     Aceita os formatos mais comuns usados na Silver/Gold para flags SUS.
@@ -180,6 +224,50 @@ def condicao_sim(campo: str) -> str:
         f"UPPER(TRIM(TO_CHAR({campo}))) "
         "IN ('S', 'SIM', '1', 'Y', 'YES', 'TRUE')"
     )
+
+
+# ============================================================
+# CACHE EM MEMÓRIA PARA FILTROS GEOGRÁFICOS
+# ============================================================
+
+CACHE_FILTROS_TTL_SEGUNDOS = 3600
+
+_cache_filtros = {}
+_cache_filtros_lock = Lock()
+
+
+def obter_cache_filtro(chave):
+    """
+    Retorna o valor armazenado se ainda estiver dentro do TTL.
+    O cache é local ao processo da API.
+    """
+    agora = monotonic()
+
+    with _cache_filtros_lock:
+        item = _cache_filtros.get(chave)
+
+        if item is None:
+            return None
+
+        expira_em, dados = item
+
+        if agora >= expira_em:
+            _cache_filtros.pop(chave, None)
+            return None
+
+        return dados
+
+
+def salvar_cache_filtro(chave, dados):
+    """
+    Armazena o resultado por 1 hora.
+    """
+    expira_em = monotonic() + CACHE_FILTROS_TTL_SEGUNDOS
+
+    with _cache_filtros_lock:
+        _cache_filtros[chave] = (expira_em, dados)
+
+    return dados
 
 
 # ============================================================
@@ -226,6 +314,12 @@ def testar_banco():
 
 @app.get("/regioes")
 def listar_regioes():
+    chave_cache = ("regioes",)
+
+    dados_cache = obter_cache_filtro(chave_cache)
+    if dados_cache is not None:
+        return dados_cache
+
     sql = """
         SELECT DISTINCT regiao
         FROM DIM_MUNICIPIO
@@ -233,13 +327,20 @@ def listar_regioes():
         ORDER BY regiao
     """
 
-    return executar_consulta(sql)
+    dados = executar_consulta(sql)
+    return salvar_cache_filtro(chave_cache, dados)
 
 
 @app.get("/ufs")
 def listar_ufs(
     regiao: Optional[str] = None
 ):
+    chave_cache = ("ufs", regiao or "")
+
+    dados_cache = obter_cache_filtro(chave_cache)
+    if dados_cache is not None:
+        return dados_cache
+
     sql = """
         SELECT DISTINCT uf
         FROM DIM_MUNICIPIO
@@ -254,7 +355,8 @@ def listar_ufs(
 
     sql += " ORDER BY uf"
 
-    return executar_consulta(sql, parametros)
+    dados = executar_consulta(sql, parametros)
+    return salvar_cache_filtro(chave_cache, dados)
 
 
 @app.get("/municipios")
@@ -262,6 +364,12 @@ def listar_municipios(
     uf: Optional[str] = None,
     regiao: Optional[str] = None
 ):
+    chave_cache = ("municipios", uf or "", regiao or "")
+
+    dados_cache = obter_cache_filtro(chave_cache)
+    if dados_cache is not None:
+        return dados_cache
+
     sql = """
         SELECT
             id_municipio,
@@ -284,7 +392,8 @@ def listar_municipios(
 
     sql += " ORDER BY nome_municipio"
 
-    return executar_consulta(sql, parametros)
+    dados = executar_consulta(sql, parametros)
+    return salvar_cache_filtro(chave_cache, dados)
 
 
 @app.get("/unidades")
@@ -373,11 +482,16 @@ def geral_resumo(
             ) AS permanencia_media
 
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    sql_internacoes = adicionar_joins_internacao_opcionais(
+        sql_internacoes,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio
+    )
 
+    sql_internacoes += """
         WHERE i.dim_data_data_entrada >= :data_entrada
           AND i.dim_data_data_entrada < :data_saida + 1
     """
@@ -457,8 +571,8 @@ def geral_resumo(
             ON dm.id_municipio =
                l.dim_municipio_id_municipio
 
-        WHERE TRUNC(l.dim_data_data, 'MM') =
-              TRUNC(:competencia_final, 'MM')
+        WHERE l.dim_data_data >= TRUNC(:competencia_final, 'MM')
+          AND l.dim_data_data < ADD_MONTHS(TRUNC(:competencia_final, 'MM'), 1)
     """
 
     sql_leitos, parametros_leitos = adicionar_filtros_municipio(
@@ -505,11 +619,16 @@ def internacoes_evolucao(
             COUNT(*) AS internacoes
 
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    sql = adicionar_joins_internacao_opcionais(
+        sql,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio
+    )
 
+    sql += """
         WHERE i.dim_data_data_entrada >= :data_entrada
           AND i.dim_data_data_entrada < :data_saida + 1
     """
@@ -560,11 +679,19 @@ def hospitais_demanda(
             COUNT(*) AS internacoes
 
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    # O JOIN com município só é necessário se houver filtro geográfico.
+    sql = adicionar_joins_internacao_opcionais(
+        sql,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio
+    )
 
+    # Estes JOINs são sempre necessários porque o resultado usa
+    # CNES e o nome do estabelecimento.
+    sql += """
         JOIN UNIDADE_SAUDE u
             ON u.id_versao_unidade =
                i.unidade_saude_id_unidade
@@ -620,11 +747,16 @@ def geral_diagnosticos(
             COUNT(*) AS internacoes
 
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    sql = adicionar_joins_internacao_opcionais(
+        sql,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio
+    )
 
+    sql += """
         WHERE i.dim_data_data_entrada >= :data_entrada
           AND i.dim_data_data_entrada < :data_saida + 1
           AND i.diagnostico IS NOT NULL
@@ -742,8 +874,8 @@ def unidades_tipos_ranking(
             ON dm.id_municipio =
                u.dim_municipio_id_municipio
 
-        WHERE TRUNC(u.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
+        WHERE u.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND u.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
           AND u.tipo_unidade IS NOT NULL
     """
 
@@ -936,68 +1068,98 @@ def unidade_infraestrutura(
 ):
     competencia_data = competencia_para_data(competencia)
 
-    # ---------------- LEITOS ----------------
-    sql_leitos = """
+    # Uma única chamada ao Oracle retorna leitos, equipamentos,
+    # profissionais e o total de profissionais da unidade.
+    sql = """
+        WITH leitos AS (
+            SELECT
+                l.tipo_leito AS categoria,
+                NVL(SUM(l.qt_existente), 0) AS quantidade
+
+            FROM FATO_LEITOS l
+
+            JOIN UNIDADE_SAUDE u
+                ON u.id_versao_unidade =
+                   l.unidade_saude_id_unidade_ver
+
+            WHERE u.id_unidade_saude = :cnes
+              AND l.dim_data_data >= TRUNC(:competencia, 'MM')
+              AND l.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
+              AND l.tipo_leito IS NOT NULL
+
+            GROUP BY l.tipo_leito
+        ),
+
+        equipamentos AS (
+            SELECT
+                e.tipo_equipamento AS categoria,
+                NVL(SUM(e.qt_equipamentos), 0) AS quantidade
+
+            FROM FATO_EQUIPAMENTOS e
+
+            JOIN UNIDADE_SAUDE u
+                ON u.id_versao_unidade =
+                   e.unidade_saude_id_unidade_ver
+
+            WHERE u.id_unidade_saude = :cnes
+              AND e.dim_data_data >= TRUNC(:competencia, 'MM')
+              AND e.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
+              AND e.tipo_equipamento IS NOT NULL
+
+            GROUP BY e.tipo_equipamento
+        ),
+
+        profissionais AS (
+            SELECT
+                p.cbo AS categoria,
+                COUNT(DISTINCT p.cns) AS quantidade,
+                GROUPING(p.cbo) AS total_flag
+
+            FROM PROFISSIONAL p
+
+            JOIN UNIDADE_SAUDE u
+                ON u.id_versao_unidade =
+                   p.unidade_saude_id_unidade_ver
+
+            WHERE u.id_unidade_saude = :cnes
+              AND p.dim_data_data >= TRUNC(:competencia, 'MM')
+              AND p.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
+              AND p.cns IS NOT NULL
+
+            GROUP BY GROUPING SETS (
+                (p.cbo),
+                ()
+            )
+        )
+
         SELECT
-            l.tipo_leito,
-            NVL(SUM(l.qt_existente), 0) AS quantidade
+            'leitos' AS grupo,
+            categoria,
+            quantidade
+        FROM leitos
 
-        FROM FATO_LEITOS l
+        UNION ALL
 
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               l.unidade_saude_id_unidade_ver
-
-        WHERE u.id_unidade_saude = :cnes
-          AND TRUNC(l.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
-          AND l.tipo_leito IS NOT NULL
-
-        GROUP BY l.tipo_leito
-        ORDER BY quantidade DESC
-    """
-
-    # ---------------- EQUIPAMENTOS ----------------
-    sql_equipamentos = """
         SELECT
-            e.tipo_equipamento,
-            NVL(SUM(e.qt_equipamentos), 0) AS quantidade
+            'equipamentos' AS grupo,
+            categoria,
+            quantidade
+        FROM equipamentos
 
-        FROM FATO_EQUIPAMENTOS e
+        UNION ALL
 
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               e.unidade_saude_id_unidade_ver
-
-        WHERE u.id_unidade_saude = :cnes
-          AND TRUNC(e.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
-          AND e.tipo_equipamento IS NOT NULL
-
-        GROUP BY e.tipo_equipamento
-        ORDER BY quantidade DESC
-    """
-
-    # ---------------- PROFISSIONAIS ----------------
-    sql_profissionais = """
         SELECT
-            p.cbo,
-            COUNT(DISTINCT p.cns) AS quantidade
+            CASE
+                WHEN total_flag = 1 THEN 'total_profissionais'
+                ELSE 'profissionais'
+            END AS grupo,
+            categoria,
+            quantidade
+        FROM profissionais
+        WHERE total_flag = 1
+           OR categoria IS NOT NULL
 
-        FROM PROFISSIONAL p
-
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               p.unidade_saude_id_unidade_ver
-
-        WHERE u.id_unidade_saude = :cnes
-          AND TRUNC(p.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
-          AND p.cns IS NOT NULL
-          AND p.cbo IS NOT NULL
-
-        GROUP BY p.cbo
-        ORDER BY quantidade DESC
+        ORDER BY grupo, quantidade DESC
     """
 
     parametros = {
@@ -1005,41 +1167,38 @@ def unidade_infraestrutura(
         "competencia": competencia_data
     }
 
-    leitos = executar_consulta(
-        sql_leitos,
-        parametros
-    )
+    linhas = executar_consulta(sql, parametros)
 
-    equipamentos = executar_consulta(
-        sql_equipamentos,
-        parametros
-    )
+    leitos = []
+    equipamentos = []
+    profissionais = []
+    total_profissionais = 0
 
-    profissionais = executar_consulta(
-        sql_profissionais,
-        parametros
-    )
+    for linha in linhas:
+        grupo = linha.get("grupo")
+        categoria = linha.get("categoria")
+        quantidade = linha.get("quantidade", 0)
 
-    sql_total_profissionais = """
-        SELECT
-            COUNT(DISTINCT p.cns) AS total_profissionais
+        if grupo == "leitos":
+            leitos.append({
+                "tipo_leito": categoria,
+                "quantidade": quantidade
+            })
 
-        FROM PROFISSIONAL p
+        elif grupo == "equipamentos":
+            equipamentos.append({
+                "tipo_equipamento": categoria,
+                "quantidade": quantidade
+            })
 
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               p.unidade_saude_id_unidade_ver
+        elif grupo == "profissionais":
+            profissionais.append({
+                "cbo": categoria,
+                "quantidade": quantidade
+            })
 
-        WHERE u.id_unidade_saude = :cnes
-          AND TRUNC(p.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
-          AND p.cns IS NOT NULL
-    """
-
-    total_profissionais = executar_consulta_unica(
-        sql_total_profissionais,
-        parametros
-    ).get("total_profissionais", 0)
+        elif grupo == "total_profissionais":
+            total_profissionais = quantidade
 
     return {
         "cnes": cnes,
@@ -1092,8 +1251,8 @@ def leitos_resumo(
             ON u.id_versao_unidade =
                l.unidade_saude_id_unidade_ver
 
-        WHERE TRUNC(l.dim_data_data, 'MM') =
-              TRUNC(:competencia_fim, 'MM')
+        WHERE l.dim_data_data >= TRUNC(:competencia_fim, 'MM')
+          AND l.dim_data_data < ADD_MONTHS(TRUNC(:competencia_fim, 'MM'), 1)
     """
 
     parametros = {
@@ -1143,8 +1302,8 @@ def leitos_unidades(
             ON u.id_versao_unidade =
                l.unidade_saude_id_unidade_ver
 
-        WHERE TRUNC(l.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
+        WHERE l.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND l.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
     """
 
     parametros = {
@@ -1197,8 +1356,8 @@ def leitos_ranking_unidades(
             ON u.id_versao_unidade =
                l.unidade_saude_id_unidade_ver
 
-        WHERE TRUNC(l.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
+        WHERE l.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND l.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
     """
 
     parametros = {
@@ -1247,8 +1406,8 @@ def leitos_ranking_tipos(
             ON u.id_versao_unidade =
                l.unidade_saude_id_unidade_ver
 
-        WHERE TRUNC(l.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
+        WHERE l.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND l.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
           AND l.tipo_leito IS NOT NULL
     """
 
@@ -1291,7 +1450,8 @@ def equipamentos_resumo(
     uf: Optional[str] = None,
     municipio: Optional[str] = None,
     cnes: Optional[str] = None,
-    tipo: Optional[str] = None
+    tipo: Optional[str] = None,
+    subtipo: Optional[str] = None
 ):
     _, fim = validar_periodo_competencia(
         competencia_inicio,
@@ -1327,8 +1487,8 @@ def equipamentos_resumo(
             ON u.id_versao_unidade =
                e.unidade_saude_id_unidade_ver
 
-        WHERE TRUNC(e.dim_data_data, 'MM') =
-              TRUNC(:competencia_fim, 'MM')
+        WHERE e.dim_data_data >= TRUNC(:competencia_fim, 'MM')
+          AND e.dim_data_data < ADD_MONTHS(TRUNC(:competencia_fim, 'MM'), 1)
     """
 
     parametros = {
@@ -1353,11 +1513,15 @@ def equipamentos_resumo(
         sql += " AND e.tipo_equipamento = :tipo"
         parametros["tipo"] = tipo
 
+    if subtipo:
+        sql += " AND e.codigo_equipamento = :subtipo"
+        parametros["subtipo"] = subtipo
+
     return executar_consulta_unica(sql, parametros)
 
 
-@app.get("/equipamentos/ranking-tipos")
-def equipamentos_ranking_tipos(
+@app.get("/equipamentos/tipos")
+def equipamentos_tipos(
     competencia: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
     regiao: Optional[str] = None,
     uf: Optional[str] = None,
@@ -1367,45 +1531,105 @@ def equipamentos_ranking_tipos(
     competencia_data = competencia_para_data(competencia)
 
     sql = """
-        SELECT
-            e.tipo_equipamento,
-            SUM(e.qt_equipamentos) AS quantidade
-
+        SELECT DISTINCT
+            e.tipo_equipamento
         FROM FATO_EQUIPAMENTOS e
-
         JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               e.dim_municipio_id_municipio
-
+            ON dm.id_municipio = e.dim_municipio_id_municipio
         JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               e.unidade_saude_id_unidade_ver
-
-        WHERE TRUNC(e.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
+            ON u.id_versao_unidade = e.unidade_saude_id_unidade_ver
+        WHERE e.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND e.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
           AND e.tipo_equipamento IS NOT NULL
     """
+    parametros = {"competencia": competencia_data}
 
+    sql, parametros = adicionar_filtros_municipio(
+        sql, parametros, regiao=regiao, uf=uf, municipio=municipio
+    )
+    sql, parametros = adicionar_filtro_cnes(sql, parametros, cnes=cnes)
+
+    sql += " ORDER BY e.tipo_equipamento"
+    return executar_consulta(sql, parametros)
+
+
+@app.get("/equipamentos/subtipos")
+def equipamentos_subtipos(
+    competencia: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
+    tipo: str = Query(...),
+    regiao: Optional[str] = None,
+    uf: Optional[str] = None,
+    municipio: Optional[str] = None,
+    cnes: Optional[str] = None
+):
+    competencia_data = competencia_para_data(competencia)
+
+    sql = """
+        SELECT DISTINCT
+            e.codigo_equipamento
+        FROM FATO_EQUIPAMENTOS e
+        JOIN DIM_MUNICIPIO dm
+            ON dm.id_municipio = e.dim_municipio_id_municipio
+        JOIN UNIDADE_SAUDE u
+            ON u.id_versao_unidade = e.unidade_saude_id_unidade_ver
+        WHERE e.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND e.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
+          AND e.tipo_equipamento = :tipo
+          AND e.codigo_equipamento IS NOT NULL
+    """
     parametros = {
-        "competencia": competencia_data
+        "competencia": competencia_data,
+        "tipo": tipo
     }
 
     sql, parametros = adicionar_filtros_municipio(
-        sql,
-        parametros,
-        regiao=regiao,
-        uf=uf,
-        municipio=municipio
+        sql, parametros, regiao=regiao, uf=uf, municipio=municipio
     )
+    sql, parametros = adicionar_filtro_cnes(sql, parametros, cnes=cnes)
 
-    sql, parametros = adicionar_filtro_cnes(
-        sql,
-        parametros,
-        cnes=cnes
+    sql += " ORDER BY e.codigo_equipamento"
+    return executar_consulta(sql, parametros)
+
+
+@app.get("/equipamentos/ranking-tipos")
+def equipamentos_ranking_tipos(
+    competencia: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
+    regiao: Optional[str] = None,
+    uf: Optional[str] = None,
+    municipio: Optional[str] = None,
+    cnes: Optional[str] = None,
+    tipo: Optional[str] = None
+):
+    competencia_data = competencia_para_data(competencia)
+
+    campo = "e.codigo_equipamento" if tipo else "e.tipo_equipamento"
+
+    sql = f"""
+        SELECT
+            {campo} AS nome,
+            SUM(e.qt_equipamentos) AS quantidade
+        FROM FATO_EQUIPAMENTOS e
+        JOIN DIM_MUNICIPIO dm
+            ON dm.id_municipio = e.dim_municipio_id_municipio
+        JOIN UNIDADE_SAUDE u
+            ON u.id_versao_unidade = e.unidade_saude_id_unidade_ver
+        WHERE e.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND e.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
+          AND {campo} IS NOT NULL
+    """
+    parametros = {"competencia": competencia_data}
+
+    sql, parametros = adicionar_filtros_municipio(
+        sql, parametros, regiao=regiao, uf=uf, municipio=municipio
     )
+    sql, parametros = adicionar_filtro_cnes(sql, parametros, cnes=cnes)
 
-    sql += """
-        GROUP BY e.tipo_equipamento
+    if tipo:
+        sql += " AND e.tipo_equipamento = :tipo"
+        parametros["tipo"] = tipo
+
+    sql += f"""
+        GROUP BY {campo}
         ORDER BY quantidade DESC
         FETCH FIRST 10 ROWS ONLY
     """
@@ -1421,7 +1645,8 @@ def equipamentos_evolucao(
     uf: Optional[str] = None,
     municipio: Optional[str] = None,
     cnes: Optional[str] = None,
-    tipo: Optional[str] = None
+    tipo: Optional[str] = None,
+    subtipo: Optional[str] = None
 ):
     inicio, fim = validar_periodo_competencia(
         competencia_inicio,
@@ -1488,6 +1713,10 @@ def equipamentos_evolucao(
         sql += " AND e.tipo_equipamento = :tipo"
         parametros["tipo"] = tipo
 
+    if subtipo:
+        sql += " AND e.codigo_equipamento = :subtipo"
+        parametros["subtipo"] = subtipo
+
     sql += """
             GROUP BY
                 TO_CHAR(e.dim_data_data, 'YYYY-MM'),
@@ -1527,70 +1756,15 @@ def profissionais_resumo(
         competencia_fim
     )
 
-    sql = f"""
-        SELECT
-            COUNT(DISTINCT p.cns)
-                AS total_profissionais_cadastrados,
-
-            COUNT(
-                DISTINCT CASE
-                    WHEN {condicao_sim("p.vinculo_sus")}
-                    THEN p.cns
-                END
-            ) AS total_profissionais_sus,
-
-            ROUND(AVG(p.horas_trabalhadas), 2)
-                AS carga_horaria_media
-
-        FROM PROFISSIONAL p
-
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               p.dim_municipio_id_municipio
-
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               p.unidade_saude_id_unidade_ver
-
-        WHERE TRUNC(p.dim_data_data, 'MM') =
-              TRUNC(:competencia_fim, 'MM')
-          AND p.cns IS NOT NULL
-    """
-
-    parametros = {
-        "competencia_fim": fim
-    }
-
-    sql, parametros = adicionar_filtros_municipio(
-        sql,
-        parametros,
-        regiao=regiao,
-        uf=uf,
-        municipio=municipio
-    )
-
-    sql, parametros = adicionar_filtro_cnes(
-        sql,
-        parametros,
-        cnes=cnes
-    )
-
-    resumo = executar_consulta_unica(
-        sql,
-        parametros
-    )
-
-    # Média de profissionais distintos por unidade.
-    sql_media = """
-        SELECT
-            ROUND(AVG(qt_profissionais), 2)
-                AS media_profissionais_por_unidade
-
-        FROM (
+    # A mesma base filtrada alimenta tanto os cards quanto
+    # a média de profissionais distintos por unidade.
+    base_sql = f"""
+        WITH base AS (
             SELECT
-                u.id_unidade_saude,
-                COUNT(DISTINCT p.cns)
-                    AS qt_profissionais
+                u.id_unidade_saude AS cnes_unidade,
+                p.cns,
+                p.vinculo_sus,
+                p.horas_trabalhadas
 
             FROM PROFISSIONAL p
 
@@ -1602,44 +1776,82 @@ def profissionais_resumo(
                 ON u.id_versao_unidade =
                    p.unidade_saude_id_unidade_ver
 
-            WHERE TRUNC(p.dim_data_data, 'MM') =
-                  TRUNC(:competencia_fim, 'MM')
+            WHERE p.dim_data_data >= TRUNC(:competencia_fim, 'MM')
+              AND p.dim_data_data < ADD_MONTHS(TRUNC(:competencia_fim, 'MM'), 1)
               AND p.cns IS NOT NULL
     """
 
-    parametros_media = {
+    parametros = {
         "competencia_fim": fim
     }
 
-    sql_media, parametros_media = adicionar_filtros_municipio(
-        sql_media,
-        parametros_media,
+    base_sql, parametros = adicionar_filtros_municipio(
+        base_sql,
+        parametros,
         regiao=regiao,
         uf=uf,
         municipio=municipio
     )
 
-    sql_media, parametros_media = adicionar_filtro_cnes(
-        sql_media,
-        parametros_media,
+    base_sql, parametros = adicionar_filtro_cnes(
+        base_sql,
+        parametros,
         cnes=cnes
     )
 
-    sql_media += """
-            GROUP BY u.id_unidade_saude
+    sql = base_sql + f"""
+        ),
+
+        por_unidade AS (
+            SELECT
+                cnes_unidade,
+                COUNT(DISTINCT cns) AS qt_profissionais
+            FROM base
+            GROUP BY cnes_unidade
+        ),
+
+        resumo AS (
+            SELECT
+                COUNT(DISTINCT b.cns)
+                    AS total_profissionais_cadastrados,
+
+                COUNT(
+                    DISTINCT CASE
+                        WHEN {condicao_sim("b.vinculo_sus")}
+                        THEN b.cns
+                    END
+                ) AS total_profissionais_sus,
+
+                ROUND(AVG(b.horas_trabalhadas), 2)
+                    AS carga_horaria_media
+
+            FROM base b
+        ),
+
+        media_unidade AS (
+            SELECT
+                ROUND(AVG(qt_profissionais), 2)
+                    AS media_profissionais_por_unidade
+            FROM por_unidade
         )
+
+        SELECT
+            r.total_profissionais_cadastrados,
+            r.total_profissionais_sus,
+            r.carga_horaria_media,
+            m.media_profissionais_por_unidade
+
+        FROM resumo r
+        CROSS JOIN media_unidade m
     """
 
-    media = executar_consulta_unica(
-        sql_media,
-        parametros_media
+    resumo = executar_consulta_unica(
+        sql,
+        parametros
     )
 
     resumo["carga_horaria_disponivel"] = (
         resumo.get("carga_horaria_media") is not None
-    )
-    resumo["media_profissionais_por_unidade"] = (
-        media.get("media_profissionais_por_unidade")
     )
 
     return resumo
@@ -1670,8 +1882,8 @@ def profissionais_ocupacoes(
             ON u.id_versao_unidade =
                p.unidade_saude_id_unidade_ver
 
-        WHERE TRUNC(p.dim_data_data, 'MM') =
-              TRUNC(:competencia, 'MM')
+        WHERE p.dim_data_data >= TRUNC(:competencia, 'MM')
+          AND p.dim_data_data < ADD_MONTHS(TRUNC(:competencia, 'MM'), 1)
           AND p.cns IS NOT NULL
           AND p.cbo IS NOT NULL
     """
@@ -1788,15 +2000,17 @@ def internacoes_resumo(
                 AS valor_medio_internacoes
 
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    sql = adicionar_joins_internacao_opcionais(
+        sql,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio,
+        cnes=cnes
+    )
 
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               i.unidade_saude_id_unidade
-
+    sql += """
         WHERE i.dim_data_data_entrada >= :data_entrada
           AND i.dim_data_data_entrada < :data_saida + 1
     """
@@ -1828,7 +2042,6 @@ def internacoes_resumo(
 
     return executar_consulta_unica(sql, parametros)
 
-
 @app.get("/internacoes/diagnosticos")
 def internacoes_diagnosticos(
     data_entrada: date,
@@ -1852,15 +2065,17 @@ def internacoes_diagnosticos(
             COUNT(*) AS internacoes
 
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    sql = adicionar_joins_internacao_opcionais(
+        sql,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio,
+        cnes=cnes
+    )
 
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               i.unidade_saude_id_unidade
-
+    sql += """
         WHERE i.dim_data_data_entrada >= :data_entrada
           AND i.dim_data_data_entrada < :data_saida + 1
           AND i.diagnostico IS NOT NULL
@@ -1899,6 +2114,60 @@ def internacoes_diagnosticos(
 
     return executar_consulta(sql, parametros)
 
+@app.get("/internacoes/filtros")
+def internacoes_filtros(
+    data_entrada: date,
+    data_saida: date,
+    regiao: Optional[str] = None,
+    uf: Optional[str] = None,
+    municipio: Optional[str] = None,
+    cnes: Optional[str] = None
+):
+    validar_periodo(data_entrada, data_saida)
+
+    base_sql = """
+        FROM INTERNACAO i
+        JOIN DIM_MUNICIPIO dm
+            ON dm.id_municipio = i.dim_municipio_municipio_int
+        JOIN UNIDADE_SAUDE u
+            ON u.id_versao_unidade = i.unidade_saude_id_unidade
+        WHERE i.dim_data_data_entrada >= :data_entrada
+          AND i.dim_data_data_entrada < :data_saida + 1
+    """
+    parametros = {
+        "data_entrada": data_entrada,
+        "data_saida": data_saida
+    }
+
+    base_sql, parametros = adicionar_filtros_municipio(
+        base_sql,
+        parametros,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio
+    )
+    base_sql, parametros = adicionar_filtros_internacao(
+        base_sql,
+        parametros,
+        cnes=cnes
+    )
+
+    def distintos(coluna: str):
+        sql = f"""
+            SELECT DISTINCT {coluna} AS valor
+            {base_sql}
+              AND {coluna} IS NOT NULL
+            ORDER BY valor
+        """
+        return executar_consulta(sql, parametros)
+
+    return {
+        "sexo": distintos("i.sexo"),
+        "raca_cor": distintos("i.raca_cor"),
+        "etnia": distintos("i.etnia"),
+        "carater_internacao": distintos("i.carater_internacao")
+    }
+
 
 @app.get("/internacoes/demografia")
 def internacoes_demografia(
@@ -1908,7 +2177,12 @@ def internacoes_demografia(
     uf: Optional[str] = None,
     municipio: Optional[str] = None,
     cnes: Optional[str] = None,
-    carater_internacao: Optional[str] = None
+    carater_internacao: Optional[str] = None,
+    sexo: Optional[str] = None,
+    raca_cor: Optional[str] = None,
+    etnia: Optional[str] = None,
+    idade_min: Optional[int] = None,
+    idade_max: Optional[int] = None
 ):
     validar_periodo(data_entrada, data_saida)
 
@@ -1919,15 +2193,17 @@ def internacoes_demografia(
 
     base_sql = """
         FROM INTERNACAO i
+    """
 
-        JOIN DIM_MUNICIPIO dm
-            ON dm.id_municipio =
-               i.dim_municipio_municipio_int
+    base_sql = adicionar_joins_internacao_opcionais(
+        base_sql,
+        regiao=regiao,
+        uf=uf,
+        municipio=municipio,
+        cnes=cnes
+    )
 
-        JOIN UNIDADE_SAUDE u
-            ON u.id_versao_unidade =
-               i.unidade_saude_id_unidade
-
+    base_sql += """
         WHERE i.dim_data_data_entrada >= :data_entrada
           AND i.dim_data_data_entrada < :data_saida + 1
     """
@@ -1944,80 +2220,93 @@ def internacoes_demografia(
         base_sql,
         parametros_base,
         cnes=cnes,
-        carater_internacao=carater_internacao
+        sexo=sexo,
+        raca_cor=raca_cor,
+        etnia=etnia,
+        carater_internacao=carater_internacao,
+        idade_min=idade_min,
+        idade_max=idade_max
     )
 
-    sql_sexo = """
-        SELECT
-            i.sexo AS categoria,
-            COUNT(*) AS quantidade
+    # Uma única consulta Oracle gera as quatro distribuições demográficas.
+    # GROUPING SETS evita quatro round-trips separados ao banco.
+    sql = """
+        WITH dados_filtrados AS (
+            SELECT
+                i.sexo,
+                i.raca_cor,
+                i.etnia,
+                CASE
+                    WHEN i.idade BETWEEN 0 AND 17 THEN '0-17'
+                    WHEN i.idade BETWEEN 18 AND 29 THEN '18-29'
+                    WHEN i.idade BETWEEN 30 AND 44 THEN '30-44'
+                    WHEN i.idade BETWEEN 45 AND 59 THEN '45-59'
+                    WHEN i.idade BETWEEN 60 AND 74 THEN '60-74'
+                    WHEN i.idade >= 75 THEN '75+'
+                END AS faixa
     """ + base_sql + """
-          AND i.sexo IS NOT NULL
-        GROUP BY i.sexo
-        ORDER BY quantidade DESC
-    """
-
-    sql_idade = """
-        SELECT
-            CASE
-                WHEN i.idade BETWEEN 0 AND 17 THEN '0-17'
-                WHEN i.idade BETWEEN 18 AND 29 THEN '18-29'
-                WHEN i.idade BETWEEN 30 AND 44 THEN '30-44'
-                WHEN i.idade BETWEEN 45 AND 59 THEN '45-59'
-                WHEN i.idade BETWEEN 60 AND 74 THEN '60-74'
-                WHEN i.idade >= 75 THEN '75+'
-            END AS faixa,
-            COUNT(*) AS quantidade
-    """ + base_sql + """
-          AND i.idade IS NOT NULL
-        GROUP BY
-            CASE
-                WHEN i.idade BETWEEN 0 AND 17 THEN '0-17'
-                WHEN i.idade BETWEEN 18 AND 29 THEN '18-29'
-                WHEN i.idade BETWEEN 30 AND 44 THEN '30-44'
-                WHEN i.idade BETWEEN 45 AND 59 THEN '45-59'
-                WHEN i.idade BETWEEN 60 AND 74 THEN '60-74'
-                WHEN i.idade >= 75 THEN '75+'
-            END
-        ORDER BY quantidade DESC
-    """
-
-    sql_raca = """
-        SELECT
-            i.raca_cor AS categoria,
-            COUNT(*) AS quantidade
-    """ + base_sql + """
-          AND i.raca_cor IS NOT NULL
-        GROUP BY i.raca_cor
-        ORDER BY quantidade DESC
-    """
-
-    sql_etnia = """
-        SELECT
-            i.etnia AS categoria,
-            COUNT(*) AS quantidade
-    """ + base_sql + """
-          AND i.etnia IS NOT NULL
-        GROUP BY i.etnia
-        ORDER BY quantidade DESC
-        FETCH FIRST 10 ROWS ONLY
-    """
-
-    return {
-        "sexo": executar_consulta(
-            sql_sexo,
-            parametros_base
-        ),
-        "idade": executar_consulta(
-            sql_idade,
-            parametros_base
-        ),
-        "raca_cor": executar_consulta(
-            sql_raca,
-            parametros_base
-        ),
-        "etnia": executar_consulta(
-            sql_etnia,
-            parametros_base
         )
+        SELECT
+            CASE
+                WHEN GROUPING(sexo) = 0 THEN 'sexo'
+                WHEN GROUPING(faixa) = 0 THEN 'idade'
+                WHEN GROUPING(raca_cor) = 0 THEN 'raca_cor'
+                WHEN GROUPING(etnia) = 0 THEN 'etnia'
+            END AS grupo,
+
+            CASE
+                WHEN GROUPING(sexo) = 0 THEN sexo
+                WHEN GROUPING(faixa) = 0 THEN faixa
+                WHEN GROUPING(raca_cor) = 0 THEN raca_cor
+                WHEN GROUPING(etnia) = 0 THEN etnia
+            END AS categoria,
+
+            COUNT(*) AS quantidade
+
+        FROM dados_filtrados
+
+        GROUP BY GROUPING SETS (
+            (sexo),
+            (faixa),
+            (raca_cor),
+            (etnia)
+        )
+
+        HAVING
+               (GROUPING(sexo) = 0 AND sexo IS NOT NULL)
+            OR (GROUPING(faixa) = 0 AND faixa IS NOT NULL)
+            OR (GROUPING(raca_cor) = 0 AND raca_cor IS NOT NULL)
+            OR (GROUPING(etnia) = 0 AND etnia IS NOT NULL)
+
+        ORDER BY grupo, quantidade DESC
+    """
+
+    linhas = executar_consulta(sql, parametros_base)
+
+    resultado = {
+        "sexo": [],
+        "idade": [],
+        "raca_cor": [],
+        "etnia": []
     }
+
+    for linha in linhas:
+        grupo = linha.get("grupo")
+        categoria = linha.get("categoria")
+        quantidade = linha.get("quantidade")
+
+        if grupo == "idade":
+            resultado["idade"].append({
+                "faixa": categoria,
+                "quantidade": quantidade
+            })
+        elif grupo in ("sexo", "raca_cor", "etnia"):
+            resultado[grupo].append({
+                "categoria": categoria,
+                "quantidade": quantidade
+            })
+
+    # Mantém o comportamento anterior: etnia limitada ao top 10.
+    resultado["etnia"] = resultado["etnia"][:10]
+
+    return resultado
